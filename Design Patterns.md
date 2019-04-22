@@ -133,7 +133,291 @@ class CloseUtils {
 
 正确范例见LOD中无前缀的几个类。
 
+将对租房是否符合租户要求的判定移到了中介中（现实中也是这样），中介根据租户的要求寻找房子并将结果反馈给租户，租户并不需要知道全部租房的信息，租户只需要与中介沟通就好了！
+
 ## 二、单例模式
+
+~~这个谁没用过~~
+
+### 使用场景
+
+确保某个类只有一个对象，避免产生多个对象消耗资源。或者某个类的对象只应该有一个。
+
+### 要素
+
+- 构造函数一般用private修饰，不对外开放。
+- 通过一个静态方法或**枚举**（加粗是因为我之前没见过）返回单例类对象。
+- 确保单例中对象有且只有一个~~（废话不然叫什么单例）~~。
+- 确保单例在反序列化时不会重新构造对象。
+
+### * 枚举单例的使用
+
+首先，我不是很会枚举，所以我要说一下可能大家都知道的废话。
+
+``` java
+//基本用法
+enum Typr{
+  A, B, C, D;
+}
+//如果不写枚举？
+class Type extends Enum{
+  public static final Type A;
+  public static final Type B;
+  //TODO
+}
+```
+
+我们可以将Type看作一个类，而将A,B,C,D看作类的实例。当然，实例的构造不是我们做的，一个Enum的构造方法是私有的，也就是不允许我们调用。
+
+既然我们将Type看做一个类，而将A,B,C,D看作类的实例，我们就可以在Type中定义变量和方法！
+
+``` java
+enum Type{
+  A, B, C, D;
+  static int value;
+  public static int getValue() {
+    return value;
+  }
+  String type;
+  public String getType() {
+    return type;
+  }
+}
+```
+
+既然我们将Type看作一个类，而将A,B,C,D看作实例，因为getValue方法是一个静态方法，所以调用时直接Type.getValue()即可，而getType方法是一个实例方法，所以调用时通过**Type.A.getType()**即可。
+
+而且！对于某个实例，它甚至可以实现自己的实例方法！
+
+``` java
+enum Type{
+  A{
+    public String getType() {
+      return "now I return A";
+    }
+  }, B, C, D;
+  static int value;
+  public static int getValue() {
+    return value;
+  }
+  String type;
+  public String getType() {
+    return type;
+  }
+}
+```
+
+这里，独属于A的实例方法可以**覆盖**原本的方法。
+
+更深一步，我们可以在枚举中定义抽象方法并强制其所有实例覆写该方法。
+
+``` java
+enum Type{
+  public abstract String getType();
+  A{
+    @Override
+    public String getType() {
+      return "A";
+    }
+  }, B{
+    @Override
+    public String getType() {
+      return "B";
+    }
+  }, C{
+    @Override
+    public String getType() {
+      return "C";
+    }
+  }, D{
+    @Override
+    public String getType() {
+      return "D";
+    }
+  };
+}
+```
+
+~~以上所有代码老子都没有跑过，如果有问题请装作莫有看见。~~
+
+好！有了上面的铺垫，下面我们正式进入枚举单例的学习！
+
+``` java
+class Resource{}
+public enum Sample{
+  INSTANCE;
+  private Resource instance;
+  Sample() {
+    instance = new Resource();
+  }
+  public Resource getInstance() {
+    return instance;
+  }
+}
+```
+
+这个Resource就是我们要应用的单例模式的资源，具体表现形式可以为网络连接，数据库连接，线程池等等。
+
+获取资源的方式为：**Sample.INSTANCE.getInstance()**。
+
+下面分析一下单例是如何被保证的：
+
+首先，枚举的构造方法是私有的（就是私有！），在我们第一次访问枚举实例的时候会执行这个构造方法，同时每个实例都是static final的，这就保证了每个实例只能被实例化一次，所以我们的INSTANCE也能保证只被实例化一次，进而instance也能保证只被实例化一次。~~（草，好牛逼）~~
+
+多嘴：
+
+我们再看一哈Enum这个类的声明。
+
+``` java
+public abstract class Enum<E extends Enum<E>> implements Comparable<E>, Seriarizable
+```
+
+枚举也提供了**序列化机制**。
+
+> 《Effective Java》里面讲，单元素的枚举类型已经成为实现单例模式的最佳选择。
+>
+> ~~（我觉得也是）~~
+
+### 懒汉模式与饿汉模式
+
+- 饿汉模式
+
+  ``` java
+  //饿汉模式的典型写法
+  public class Sample{
+    private static final Sample INSTANCE = new Sample();
+    private Sample(){}
+    public static Sample getInstance() {
+      return INSTANCE;
+    }
+  }
+  ```
+
+  可以看到，这个Sample在声明的时候就已经初始化。
+
+- 懒汉模式
+
+  ``` java
+  //懒汉模式的经典写法
+  public class Sample{
+    private static Sample INSTANCE;
+    private Sample(){}
+    public static synchronized Sample getInstance() {
+      if (INSTANCE == null) {
+        INSTANCE = new Sample();
+      }
+      return INSTANCE;
+    }
+  }
+  ```
+
+  需要注意的是，饿汉模式下的getInstance方法添加了**synchronized**关键字，这是**在多线程条件下保证单例对象唯一性的手段**。
+
+  懒汉模式的优点在于单例只有在使用时才会被实例化，在一定程度上节约了资源；缺点是第一次加载时需要及时实例化，反应稍慢，最大的问题在于每次调用getInstance方法时都进行同步，造成不必要的同步开销。所以**不建议使用懒汉模式**！
+
+### * Double Check Lock(DCL)实现单例
+
+这种方法既能够在需要的时候才初始化单例，又保证了线程安全，好像一般来说这是最常见的单例写法。
+
+``` java
+public class Sample{
+  private static Sampel INSTANCE = null;
+  private Sample(){}
+  public static Sample getInstance() {
+    if (INSTANCE == null) {
+      synchronized (Sample.class) {
+        if (INSTANCE == null) {
+          INSTANCE = new Sample();
+        }
+      }
+    }
+    return INSTANCE;
+  }
+}
+```
+
+这个方法的精髓在于getInstance方法，可以看到此方法对INSTANCE进行了**两次判空**，第一层避免了不必要的同步，第二层在null的情况下创造了实例。
+
+假设线程执行到`INSTANCE = new Sample();`语句，**这并不是一个原子操作**（所谓原子操作是指不会被线程调度机制打断的操作），转为汇编代码之后大致做了如下三件事：
+
+1. 给Sample的实例分配内存；
+2. 调用Sample()的构造函数，初始化成员字段；
+3. 将INSTANCE对象指向分配的空间，这时它不再是null。
+
+> 由于java编译器乱序执行，在JDK1.5及之前的JMM（Java Memory Model，即java内存模型）中Cache、寄存器到主内存回写顺序的规定，上面的2步和3步的顺序是无法保证的，若执行1-3-2，在3执行完毕而2未执行的情况下切换到线程B，因为INSTANCE在A中执行了3所以它不再是非空，而它实际没有意义，所以直接使用会出错，这就是DCL失控的情况。
+>
+> 不过在JDK1.5之后SUN官方注意到了这个问题，调整了JVM（具体我还不懂），具体化了volatile关键字，只需要将INSTANCE的定义改为private volatile static Sample INSTANCE = null; 就可以保证每次INSTANCE都是从主存中读取，从而避免了上述问题。
+>
+> 这个暂时看不太懂没关系，只需要记住，加volatile关键字就行。
+
+DCL同样存在初次加载较慢的问题。
+
+### * 静态内部类单例模式
+
+一种对DCL的优化。
+
+``` java
+public class Singleton{
+  private Singleton(){}
+  public static Singleton getInstance() {
+    return SingletonHolder.sInstance;
+  }
+  //静态内部类
+  private static class SingletonHolder{
+    private static final Singleton sInstance = new Singleton();
+  }
+}
+```
+
+可以看到，在第一次加载Singleton类的时候不会初始化sIntance，而是在第一次调用getInstance方法时才会导致虚拟机加载静态内部类SingletonHolder，这种方式不仅保证线程安全，而且保证了单例对象的唯一性，所以这是最推荐的方法。
+
+### 关于序列化
+
+在枚举单例中我们提到，枚举类提供了序列化机制。
+
+上述除了枚举的所有方法仍然存在重新创造实例的风险：在反序列化时。
+
+通过序列化可以将一个对象写入磁盘再读回来，从而有效的获得一个实例，即使构造函数是私有的，反序列化仍然有特殊的手段去创建类的一个新实例（我还不懂）。反序列化提供了一个很特别的钩子函数，类中有一个私有的、被实例化的方法`readResolve()`，这个方法可以让开发人员控制对象的反序列化。
+
+上述几个示例中若想避免重新创造对象，必须加入以下代码：
+
+``` java
+private Object readSolve() throws ObjectStreamException{
+  return sInstance;
+}
+```
+
+就是让这个方法返回sInstance而不是新生成一个对象，而枚举单例模式不存在这个问题。
+
+### 使用容器实现单例模式
+
+~~什么奇技淫巧~~
+
+``` java
+public class SingletonManager{
+  private static Map<String, Object> objMap = new HashMap<>();
+  
+  private SingletonManager(){}
+  public static void registrService(String key, Object instance) {
+    if (!objMap.containsKey(key)) {
+      objMap.put(key, instance);
+    }
+  }
+  public static Object getInstance(String key) {
+    return objMap.get(key);
+  }
+}
+```
+
+其优点在于进一步降低了耦合度
+
+~~以我目前的水平应该用不到此方法~~
+
+### 系统源代码分析
+
+#### LayoutInflater
+
+
 
 ## 三、Builder模式
 
