@@ -2,6 +2,8 @@
 
 ~~适用人群我自己~~
 
+基于Android5，因为这本书基于Android5，但是我下载的代码是Android9，所以肯定有大改动，不过！等我搞清楚了再改。
+
 ## 一、面向对象的六大原则
 
 ### 1.1 单一职责原则
@@ -748,3 +750,213 @@ override fun clone() {
 ### 5.1 定义
 
 工厂模式定义一个用于创造对象的接口，让子类决定实例化哪个类。
+
+### 5.2 Activity的启动
+
+首先，对于一个应用程序而言，其入口在ActivityThread类中，ActivityThread中有我们熟悉的main方法。当Zygote进程孵化一个应用进程后，会执行其ActivityThread中的main方法，在main方法中进行了一些常规的逻辑，比如准备Looper和消息队列、调用attach方法将其绑定到ActivityManagerService方法中，开始不断的读取消息并分发消息（属于一个基于事件驱动的模型）。
+
+attach方法中根据一个boolean参数system分成了两部分，在!system部分中，执行了：
+
+```java
+final IActivityManager mgr = ActivityManager.getService();
+try {
+    mgr.attachApplication(mAppThread, startSeq);
+} catch (RemoteException ex) {
+    throw ex.rethrowFromSystemServer();
+}
+```
+
+先获得了一个ActivityManagerService对象，然后调用attachApplication方法。在attachApplication中调用了attachApplicationLocked方法：
+
+``` java
+ @Override
+public final void attachApplication(IApplicationThread thread, long startSeq) {
+    synchronized (this) {
+        int callingPid = Binder.getCallingPid();
+        final int callingUid = Binder.getCallingUid();
+        final long origId = Binder.clearCallingIdentity();
+        attachApplicationLocked(thread, callingPid, callingUid, startSeq);
+        Binder.restoreCallingIdentity(origId);
+    }
+}
+```
+
+可以看到，这个方法其实是调用了attachApplicationLocked方法来进行绑定，这是一个非常复杂的方法，但其中最重要的是bindApplication和attachApplicationLocked两个方法的调用。
+
+bindApplication有非常多的参数，但是它的作用非常好理解~~就写在脸上了~~，即将ApplicationThread对象绑定到ActivityManagerService；而关于attachApplicationLocked方法，它的具体调用场景是：
+
+``` java
+try {
+    if (mStackSupervisor.attachApplicationLocked(app)) {
+        didSomething = true;
+    }
+} catch (Exception e) {
+    Slog.wtf(TAG, "Exception thrown launching activities in " + app, e);
+    badApp = true;
+}
+```
+
+暂时不对参数做详细的解释，我们只需要知道一个类型为ActivityStackSupervisor的mStackSupervisor调用了该方法，这个类中的attachApplicationLocked方法写了很多，但是对我们真正重要的只有这一段：
+
+``` java
+if (realStartActivityLocked(activity, app,
+                            top == activity /* andResume */, true /* checkConfig */)) {
+    didSomething = true;
+}
+```
+
+这个realStartActivityLocked的内部处理了"真正"启动Activity的逻辑。
+
+这个方法很复杂，主要经历了以下几步：
+
+1. 冻结尚未启动的其他Activity；
+
+2. 搜集启动慢的activity的信息；
+
+3. 设置相关参数；
+
+4. 判断是否是桌面activity，若是，则将其添加到当前activity栈的底部；
+
+5. 所有参数准备到位后准备启动activity：调用`app.thread.scheduleLaunchActivity（Intent， IBinder, int, ActivityInfo, Configuration, CompatibilityInfo, String, IVoiceInteractor, int, Bundle, PersistableBundle, List<ResultInfo>, List<ReferrerIntent>, boolean, boolean, ProfileInfo）`方法。
+
+   这个方法进行了这样几件事：
+
+   1. 构造一个ActivityClientRecord对象，并设置它的相关参数；
+
+   2. 更新配置信息；
+
+   3. 通过sendMessage方法启动消息队列。
+
+      sendMessage的一个重载方法有以下参数：`sendMessage(int what, Object obj)`第一个参数是标识，第二个参数是操作对象，例如，这里设置的是：`sendMessage(LAUNCH_ACTIVITY, r)`，最终调用`case LAUNCH_ACTIVITY:`中的代码段，其中包括一个方法handleLaunchActivity，而handleLaunchActivity最终调用了**performLaunchActivity**（重点方法！）
+
+      因为它很重要我直接摘抄源码了：
+
+      ``` java
+      private Activity performLaunchActivity(ActivityClientRecord r, Intent customIntent) {
+        			//获取ActivityInfo
+              ActivityInfo aInfo = r.activityInfo;
+              if (r.packageInfo == null) {
+                	//获取PackageInfo
+                  r.packageInfo = getPackageInfo(aInfo.applicationInfo, r.compatInfo,
+                          Context.CONTEXT_INCLUDE_CODE);
+              }
+      
+        			//获取ComponentName
+              ComponentName component = r.intent.getComponent();
+              if (component == null) {
+                  component = r.intent.resolveActivity(
+                      mInitialApplication.getPackageManager());
+                  r.intent.setComponent(component);
+              }
+      
+              if (r.activityInfo.targetActivity != null) {
+                  component = new ComponentName(r.activityInfo.packageName,
+                          r.activityInfo.targetActivity);
+              }
+      
+              ContextImpl appContext = createBaseContextForActivity(r);
+        			//构造activity并设置参数
+              Activity activity = null;
+              try {
+                  java.lang.ClassLoader cl = appContext.getClassLoader();
+                  activity = mInstrumentation.newActivity(
+                          cl, component.getClassName(), r.intent);
+                  StrictMode.incrementExpectedActivityCount(activity.getClass());
+                  r.intent.setExtrasClassLoader(cl);
+                  r.intent.prepareToEnterProcess();
+                  if (r.state != null) {
+                      r.state.setClassLoader(cl);
+                  }
+              } catch (Exception e) {
+                  if (!mInstrumentation.onException(activity, e)) {
+                      throw new RuntimeException(
+                          "Unable to instantiate activity " + component
+                          + ": " + e.toString(), e);
+                  }
+              }
+      
+              try {
+                	//获取application对象
+                  Application app = r.packageInfo.makeApplication(false, mInstrumentation);
+      
+                  if (localLOGV) Slog.v(TAG, "Performing launch of " + r);
+                  if (localLOGV) Slog.v(
+                          TAG, r + ": app=" + app
+                          + ", appName=" + app.getPackageName()
+                          + ", pkg=" + r.packageInfo.getPackageName()
+                          + ", comp=" + r.intent.getComponent().toShortString()
+                          + ", dir=" + r.packageInfo.getAppDir());
+      
+                  if (activity != null) {
+                      CharSequence title = r.activityInfo.loadLabel(appContext.getPackageManager());
+                      Configuration config = new Configuration(mCompatConfiguration);
+                      if (r.overrideConfig != null) {
+                          config.updateFrom(r.overrideConfig);
+                      }
+                      if (DEBUG_CONFIGURATION) Slog.v(TAG, "Launching activity "
+                              + r.activityInfo.name + " with config " + config);
+                      Window window = null;
+                      if (r.mPendingRemoveWindow != null && r.mPreserveWindow) {
+                          window = r.mPendingRemoveWindow;
+                          r.mPendingRemoveWindow = null;
+                          r.mPendingRemoveWindowManager = null;
+                      }
+                      appContext.setOuterContext(activity);
+                    	//将application对象、context对象等绑定到activity对象
+                    	/* 这个方法的参数设置如下：
+                    	*  final void attach(Context, ActivityThread, Instrumentation, 
+                    	*  IBinder, int, Application, Intent, ActivityInfo, CharSequence, 
+                    	*  Activity, String, NonConfigurationInstances, Configuration, 
+                    	*  String, IVoiceInteractor, Window, ActivityConfigCallback) */
+                      activity.attach(appContext, this, getInstrumentation(), r.token,
+                              r.ident, app, r.intent, r.activityInfo, title, r.parent,
+                              r.embeddedID, r.lastNonConfigurationInstances, config,
+                              r.referrer, r.voiceInteractor, window, r.configCallback);
+      
+                      if (customIntent != null) {
+                          activity.mIntent = customIntent;
+                      }
+                      r.lastNonConfigurationInstances = null;
+                      checkAndBlockForNetworkAccess();
+                      activity.mStartedActivity = false;
+                      int theme = r.activityInfo.getThemeResource();
+                      if (theme != 0) {
+                          activity.setTheme(theme);
+                      }
+      
+                      activity.mCalled = false;
+                      if (r.isPersistable()) {
+                        	//这个方法最终调用Activity的OnCreate方法
+                          mInstrumentation.callActivityOnCreate(activity, r.state, r.persistentState);
+                      } else {
+                          mInstrumentation.callActivityOnCreate(activity, r.state);
+                      }
+                      if (!activity.mCalled) {
+                          throw new SuperNotCalledException(
+                              "Activity " + r.intent.getComponent().toShortString() +
+                              " did not call through to super.onCreate()");
+                      }
+                      r.activity = activity;
+                  }
+                  r.setState(ON_CREATE);
+      
+                  mActivities.put(r.token, r);
+      
+              } catch (SuperNotCalledException e) {
+                  throw e;
+      
+              } catch (Exception e) {
+                  if (!mInstrumentation.onException(activity, e)) {
+                      throw new RuntimeException(
+                          "Unable to start activity " + component
+                          + ": " + e.toString(), e);
+                  }
+              }
+      
+      ```
+
+      
+
+### 5.3 总结
+
+其优点在于较强的可拓展性，而缺点也很明显——引入抽象层必将导致类结构的复杂性，所以在情况较为简单的情况下，需要仔细思考是否要选择使用工厂模式。
