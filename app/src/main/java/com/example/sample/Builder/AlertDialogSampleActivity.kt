@@ -20,7 +20,6 @@ class AlertDialogSampleActivity : AppCompatActivity() {
         builder.setMessage(MESSAGE)
         builder.setPositiveButton("Button1") {dialog, which -> title = "onClickButton1" }
         builder.create().show()
-        Dialog
     }
     companion object{
         val MESSAGE = "message_sample"
